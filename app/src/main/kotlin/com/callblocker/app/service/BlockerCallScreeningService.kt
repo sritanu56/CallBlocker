@@ -8,60 +8,46 @@ import com.callblocker.app.data.BlockedCall
 import com.callblocker.app.util.PatternMatcher
 import kotlinx.coroutines.*
 
-/**
- * This service runs in the background and intercepts EVERY incoming call.
- *
- * Android calls [onScreenCall] before the phone even rings.
- * We check the number against all rules, and either:
- *   → Block it silently (caller hears busy tone, you see nothing)
- *   → Allow it through normally
- */
 class BlockerCallScreeningService : CallScreeningService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onScreenCall(callDetails: Call.Details) {
         val rawNumber = callDetails.handle?.schemeSpecificPart ?: "Unknown"
-        Log.d("CallBlocker", "Screening call from: $rawNumber")
+        Log.d("CallBlocker", "Screening: $rawNumber")
 
-        serviceScope.launch {
-            val db = AppDatabase.getInstance(applicationContext)
-            val dao = db.blockRuleDao()
-            val rules = dao.getEnabledRules()
+        // Use cached rules for INSTANT decision — no DB wait
+        val rules = RulesCache.rules
+        val matchedRule = PatternMatcher.findMatchingRule(rawNumber, rules)
 
-            val matchedRule = PatternMatcher.findMatchingRule(rawNumber, rules)
+        if (matchedRule != null) {
+            Log.d("CallBlocker", "BLOCKING $rawNumber")
 
-            if (matchedRule != null) {
-                // ── BLOCK THIS CALL ─────────────────────────────────────────
-                Log.d("CallBlocker", "BLOCKING $rawNumber — matched rule: ${matchedRule.pattern}")
+            // Respond IMMEDIATELY — before any async work
+            respondToCall(
+                callDetails,
+                CallResponse.Builder()
+                    .setRejectCall(true)
+                    .setSkipCallLog(false)
+                    .setSkipNotification(true)
+                    .build()
+            )
 
-                // Log it so the user can see it was blocked
-                dao.logBlockedCall(
+            // Log to DB in background AFTER responding
+            serviceScope.launch {
+                AppDatabase.getInstance(applicationContext).blockRuleDao().logBlockedCall(
                     BlockedCall(
-                        phoneNumber    = rawNumber,
-                        matchedPattern = matchedRule.pattern,
+                        phoneNumber     = rawNumber,
+                        matchedPattern  = matchedRule.pattern,
                         matchedRuleType = matchedRule.ruleType
                     )
                 )
-
-                // Tell Android to reject the call
-                respondToCall(
-                    callDetails,
-                    CallResponse.Builder()
-                        .setRejectCall(true)           // Hang up
-                        .setSkipCallLog(false)         // Still record in system call log
-                        .setSkipNotification(true)     // No missed-call notification
-                        .build()
-                )
-            } else {
-                // ── ALLOW THIS CALL ─────────────────────────────────────────
-                respondToCall(
-                    callDetails,
-                    CallResponse.Builder()
-                        .setRejectCall(false)
-                        .build()
-                )
             }
+        } else {
+            respondToCall(
+                callDetails,
+                CallResponse.Builder().setRejectCall(false).build()
+            )
         }
     }
 
