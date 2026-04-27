@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.callblocker.app.data.*
+import com.callblocker.app.service.RulesCache
 import com.callblocker.app.util.PatternMatcher
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -12,10 +13,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val dao = AppDatabase.getInstance(application).blockRuleDao()
 
-    // ── Live data streams that the UI observes ───────────────────────────────
-
     val rules: StateFlow<List<BlockRule>> =
         dao.getAllRules()
+            .onEach { RulesCache.rules = it.filter { r -> r.isEnabled } } // keep cache fresh
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val blockedCalls: StateFlow<List<BlockedCall>> =
@@ -26,17 +26,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dao.getTotalBlockedCount()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    // ── Actions the UI calls ─────────────────────────────────────────────────
+    init {
+        // Pre-load cache immediately on startup
+        viewModelScope.launch {
+            RulesCache.rules = dao.getEnabledRules()
+        }
+    }
 
     fun addRule(pattern: String, ruleType: RuleType, label: String) {
         viewModelScope.launch {
-            dao.insertRule(
-                BlockRule(
-                    pattern  = pattern.trim(),
-                    ruleType = ruleType,
-                    label    = label.trim()
-                )
-            )
+            dao.insertRule(BlockRule(pattern = pattern.trim(), ruleType = ruleType, label = label.trim()))
         }
     }
 
@@ -52,7 +51,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { dao.clearBlockedCallLog() }
     }
 
-    /** Validates input before saving. Returns error string or null. */
     fun validatePattern(pattern: String, ruleType: RuleType): String? =
         PatternMatcher.validate(pattern, ruleType)
 }
