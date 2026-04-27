@@ -49,7 +49,6 @@ class BlockerCallScreeningService : CallScreeningService() {
                     callDetails,
                     CallResponse.Builder()
                         .setRejectCall(true)           // Hang up
-                        .setDisallowVoicemail(true)    // Don't let it go to voicemail
                         .setSkipCallLog(false)         // Still record in system call log
                         .setSkipNotification(true)     // No missed-call notification
                         .build()
